@@ -1,0 +1,12 @@
+#torch should be install with docker
+tqdm
+sklearn
+scikit-image
+simpleitk
+scipy
+matplotlib
+nvidia-ml-py3
+
+torchsummary
+imageio
+lmdb
