@@ -143,7 +143,6 @@ class RandomShift3D(object):
         return img
 
 #
-
 class RandomNoiseXY(object):
     def __init__(self,sigma,seg):
         self.sigma = sigma

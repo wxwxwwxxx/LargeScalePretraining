@@ -284,6 +284,7 @@ class bms_config:
         self.patience = 50
         self.lr = 1e-3
 
+        self.train_repeat = 3
         # image deformation
 
         self.root_path = "/ckpt/downstream_bms"

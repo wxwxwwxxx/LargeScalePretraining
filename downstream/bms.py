@@ -15,6 +15,7 @@ import unet3d
 from framework.config import bms_config
 from tqdm import tqdm
 import lmdbdataset
+from  framework.custom_logger import CustomLogger
 from framework.dataset import bms_dataset
 from torch.utils.data import DataLoader
 import yaml
@@ -23,33 +24,38 @@ import logging
 from framework import custom_transform
 from torchvision import transforms
 
+gid = choose_gpu()
+if gid == -1:
+    print("No spare GPU.")
+    exit()
+print(f"GPU ID:{gid}")
+os.environ["CUDA_VISIBLE_DEVICES"] = f"{gid}"
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
-
-conf = bms_config(suffix="debug",pretrain_weight="/ckpt/pretrain/Models/Unet3D-bs96_gradclip_fixed/Genesis_Chest_CT_BMS.pt")
+conf = bms_config(suffix="debug2",pretrain_weight="/ckpt/pretrain/Models/Unet3D-bs96_gradclip_fixed/Genesis_Chest_CT_BMS.pt")
 # /ckpt/pretrain/Models/Unet3D-bs96_gradclip_fixed/Genesis_Chest_CT_BMS.pt
 # conf = bms_config(suffix="bms_64patch_zoom0.5_64validcrop_pretrain_2",pretrain_weight="/ckpt/pretrain/Models/Unet3D-bs96_gradclip_fixed/Genesis_Chest_CT_BMS.pt")
 # conf = bms_config(suffix="debug",pretrain_weight=None)
 conf.display()
-writer = SummaryWriter(conf.tboard_path)
+# writer = SummaryWriter(conf.tboard_path)
+#
+# ### logger
+#
+# logger = logging.getLogger("Downstream")
+# logger.setLevel(logging.DEBUG)
+# ch = logging.StreamHandler()
+# fh = logging.FileHandler(os.path.join(conf.logs_path, "output.log"))
+# fh.setLevel(logging.INFO)
+# ch_formatter = logging.Formatter('%(asctime)s,%(message)s', datefmt='%H:%M:%S')
+# fh_formatter = logging.Formatter('%(asctime)s,[%(name)s],%(message)s', datefmt='%Y/%m/%d %H:%M:%S')
+# ch.setFormatter(ch_formatter)
+# fh.setFormatter(fh_formatter)
+# logger.addHandler(ch)
+# logger.addHandler(fh)
 
-### logger
-
-logger = logging.getLogger("Downstream")
-logger.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-fh = logging.FileHandler(os.path.join(conf.logs_path, "output.log"))
-fh.setLevel(logging.INFO)
-ch_formatter = logging.Formatter('%(asctime)s,%(message)s', datefmt='%H:%M:%S')
-fh_formatter = logging.Formatter('%(asctime)s,[%(name)s],%(message)s', datefmt='%Y/%m/%d %H:%M:%S')
-ch.setFormatter(ch_formatter)
-fh.setFormatter(fh_formatter)
-logger.addHandler(ch)
-logger.addHandler(fh)
-
-
-
+logger_class = CustomLogger("bms", conf)
+logger = logger_class.get_logger()
+writer = logger_class.get_tboard_writer()
 logger.info("torch = {}".format(torch.__version__))
 
 
@@ -73,7 +79,7 @@ t0 = transforms.Compose([
     custom_transform.FixedAlign3D(120,120,80)
 ])
 
-val_dataset = bms_dataset(conf.data, conf.shape, conf, key_list=conf.val_key_list,augment=t0)
+val_dataset = bms_dataset(conf.data, conf.shape, conf, key_list=conf.val_key_list, augment=t0)
 val_dataloader = DataLoader(val_dataset, 1)
 
 
@@ -99,7 +105,6 @@ else:
     raise NotImplementedError
 
 # Change to
-# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(conf.patience * 0.8), gamma=0.5)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=12, verbose=True,
                                                        min_lr=1e-6, eps=1e-4)
 best_loss = 100000.0
@@ -110,9 +115,6 @@ num_epoch_no_improvement = 0
 if conf.weights != None:
     checkpoint = torch.load(conf.weights)
     model.load_state_dict(checkpoint['state_dict'])
-    #optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    #intial_epoch = checkpoint['epoch']
-    #best_loss = checkpoint['best_loss']
     logger.info(f"Loading weights from {conf.weights}" )
 else:
     logger.info("Training from scratch...")
@@ -124,7 +126,7 @@ for epoch in range(intial_epoch, conf.nb_epoch):
     iteration = 0
     train_losses = []
 
-    while iteration < 50:
+    while iteration < conf.train_repeat:
         for image, gt in train_dataloader:
             image, gt = image.to(device).float(), gt.to(device).float()
             pred = model(image)
@@ -132,15 +134,16 @@ for epoch in range(intial_epoch, conf.nb_epoch):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            train_losses.append(round(loss.item(), 2))
 
-            if (iteration + 1) % 25 == 0:
-                logger.debug('Epoch [{}/{}], iteration {}, Loss: {:.6f}'
-                      .format(epoch + 1, conf.nb_epoch, iteration + 1, np.average(train_losses[-25:])))
-                writer.add_images('Image/train_pred', pred[0:16, :, :, :, 8], epoch)
-                writer.add_images('Image/train_gt', gt[0:16, :, :, :, 8], epoch)
-                writer.add_images('Image/train_input', image[0:16, 0:1, :, :, 8], epoch)
-            iteration += 1
+            train_losses.append(round(loss.item(), 2))
+            logger.debug('Epoch [{}/{}], iteration {}, Loss: {:.6f}'
+                         .format(epoch + 1, conf.nb_epoch, iteration + 1, np.average(train_losses)))
+            writer.add_images('Image/train_pred', pred[0:16, :, :, :, 8], epoch)
+            writer.add_images('Image/train_gt', gt[0:16, :, :, :, 8], epoch)
+            writer.add_images('Image/train_input', image[0:16, 0:1, :, :, 8], epoch)
+
+        iteration += 1
+
 
 
 
@@ -164,13 +167,13 @@ for epoch in range(intial_epoch, conf.nb_epoch):
                 valid_pred_list.append(pred)
                 valid_gt_list.append(gt)
                 valid_input_list.append(image)
-            iou_metric = iou(gt, pred)
 
+            iou_metric = iou(gt, pred)
             dice_metric = dice_coef(gt, pred)
 
             valid_ious.append(iou_metric.item())
             valid_dices.append(dice_metric.item())
-            valid_losses.append(round(loss.item(), 2))
+            valid_losses.append(loss.item())
     # logging
     train_loss = np.average(train_losses)
     valid_loss = np.average(valid_losses)
@@ -181,6 +184,7 @@ for epoch in range(intial_epoch, conf.nb_epoch):
     valid_input = torch.cat(valid_input_list, 0)
 
     writer.add_scalar('Loss/train', train_loss, epoch)
+
     writer.add_scalar('Loss/valid', valid_loss, epoch)
     writer.add_scalar('Loss/valid_iou', valid_iou, epoch)
     writer.add_scalar('Loss/valid_dice', valid_dice, epoch)
@@ -190,6 +194,7 @@ for epoch in range(intial_epoch, conf.nb_epoch):
     writer.add_images('Image/valid_input', valid_input[:, 0:1, :, :, 40], epoch)
 
     logger.info("Epoch {}, validation iou is {:.4f}, validation dice is {:.4f}, training loss is {:.4f}, validation loss is {:.4f}".format(epoch + 1, valid_iou, valid_dice, train_loss, valid_loss))
+
     scheduler.step(valid_loss)
     if valid_loss < best_loss:
         logger.info("Validation loss decreases from {:.4f} to {:.4f}".format(best_loss, valid_loss))

@@ -16,7 +16,7 @@ try:  # SciPy >= 0.19
 except ImportError:
     from scipy.misc import comb
 
-def choose_gpu(confirm_delay=5):
+def choose_gpu(confirm_delay=10):
     pynvml.nvmlInit()
     # 这里的0是GPU id
 
